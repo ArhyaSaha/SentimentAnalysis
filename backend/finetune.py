@@ -25,7 +25,6 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Set random seeds for reproducibility
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -167,27 +166,37 @@ def main():
     parser.add_argument('--lora_r', type=int, default=16, help='LoRA rank')
     parser.add_argument('--lora_alpha', type=int, default=32, help='LoRA alpha')
     parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout')
+    parser.add_argument('--max_length', type=int, default=512, help='Maximum sequence length')
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='Gradient accumulation steps')
     
     args = parser.parse_args()
-    
-    # Set random seed
+
+    # Adjust batch size and other parameters for CPU if needed
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+        # Reduce batch size for CPU to avoid memory issues
+        if args.batch_size > 8:
+            logger.info(f"Reducing batch size from {args.batch_size} to 8 for CPU training")
+            args.batch_size = 8
+        # Reduce max length for CPU
+        if args.max_length > 256:
+            logger.info(f"Reducing max_length from {args.max_length} to 256 for CPU training")
+            args.max_length = 256
+
     set_seed(args.seed)
-    
-    # Device
-    device = torch.device('cpu')  # CPU-only as requested
     logger.info(f"Using device: {device}")
     
-    # Load data
     logger.info(f"Loading data from {args.data_path}")
     texts, labels = load_data(args.data_path)
     logger.info(f"Loaded {len(texts)} examples")
     
-    # Split data
     split_idx = int(len(texts) * (1 - args.val_split))
     train_texts, val_texts = texts[:split_idx], texts[split_idx:]
     train_labels, val_labels = labels[:split_idx], labels[split_idx:]
     
-    # Configure quantization if requested
+    # Quantization Config
     bnb_config = None
     if args.use_quantization:
         logger.info("Setting up 4-bit quantization...")
@@ -198,49 +207,77 @@ def main():
             bnb_4bit_use_double_quant=True,
         )
     
-    # Load tokenizer and model
     logger.info(f"Loading model: {args.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     
-    # Add padding token if not present
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    # Load model with proper configuration
+    model_kwargs = {
+        'num_labels': 2,
+        'ignore_mismatched_sizes': True,
+    }
+    
+    # Only add quantization config if using GPU
+    if args.use_quantization and torch.cuda.is_available():
+        model_kwargs.update({
+            'quantization_config': bnb_config,
+            'device_map': "auto",
+            'torch_dtype': torch.float16,
+        })
+        logger.info("Using GPU with quantization")
+    elif args.use_quantization and not torch.cuda.is_available():
+        logger.warning("Quantization requested but no GPU available. Falling back to regular loading.")
+        args.use_quantization = False  # Disable quantization for CPU
+    
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name,
-        num_labels=2,  # Binary classification
-        quantization_config=bnb_config if args.use_quantization else None,
-        device_map="auto" if args.use_quantization else None,
-        torch_dtype=torch.float16 if args.use_quantization else torch.float32,
-        ignore_mismatched_sizes=True,  # Allow reshaping the classifier head
+        **model_kwargs
     )
     
-    # Prepare model for k-bit training if quantization is used
-    if args.use_quantization:
+    # Prepare model for quantization if using GPU
+    if args.use_quantization and torch.cuda.is_available():
         model = prepare_model_for_kbit_training(model)
     
-    # Configure LoRA if requested
+    # LoRA Config
     if args.use_lora:
         logger.info("Setting up LoRA configuration...")
+        
+        # Updated target modules for RoBERTa
+        target_modules = ["query", "value", "key", "dense"]
+        
+        # If using quantization, add modules_to_save to handle classifier
+        modules_to_save = None
+        if args.use_quantization:
+            modules_to_save = ["classifier"]
+        
         lora_config = LoraConfig(
             task_type=TaskType.SEQ_CLS,
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
-            target_modules=["query", "value", "key", "dense"],  # Common transformer modules
+            target_modules=target_modules,
+            modules_to_save=modules_to_save,
         )
-        model = get_peft_model(model, lora_config)
-        model.print_trainable_parameters()
+        
+        try:
+            model = get_peft_model(model, lora_config)
+            model.print_trainable_parameters()
+        except Exception as e:
+            logger.error(f"Error setting up LoRA: {e}")
+            logger.info("Falling back to regular fine-tuning...")
+            args.use_lora = False
     
-    if not args.use_quantization:
+    # Move model to device if not using quantization
+    if not (args.use_quantization and torch.cuda.is_available()):
         model.to(device)
     
-    # Create datasets and dataloaders
-    train_dataset = SentimentDataset(train_texts, train_labels, tokenizer)
-    val_dataset = SentimentDataset(val_texts, val_labels, tokenizer)
+    train_dataset = SentimentDataset(train_texts, train_labels, tokenizer, max_length=args.max_length)
+    val_dataset = SentimentDataset(val_texts, val_labels, tokenizer, max_length=args.max_length)
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
     
     # Train model
     logger.info("Starting training...")

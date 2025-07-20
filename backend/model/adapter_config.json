@@ -24,14 +24,14 @@
   ],
   "peft_type": "LORA",
   "qalora_group_size": 16,
-  "r": 16,
+  "r": 8,
   "rank_pattern": {},
   "revision": null,
   "target_modules": [
     "key",
-    "value",
+    "query",
     "dense",
-    "query"
+    "value"
   ],
   "task_type": "SEQ_CLS",
   "trainable_token_indices": null,
