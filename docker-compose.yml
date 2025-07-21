@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: .  # Path to frontend Dockerfile
+    ports:
+      - "5173:5173"  # Expose frontend on port 5173
+    environment:
+      - VITE_API_URL=${API_URL:-http://localhost:8000/graphql}  # Configurable via .env
+    depends_on:
+      - backend  # Ensure backend starts first
+    networks:
+      - app-network
+
+  backend:
+    build:
+      context: ./backend  # Path to backend Dockerfile
+    ports:
+      - "8000:8000"  # Expose backend on port 8000
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
