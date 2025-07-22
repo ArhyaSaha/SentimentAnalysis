@@ -86,3 +86,11 @@ Access:
 - **Container Security**: Non-root users and resource limits in production builds
 - **Hot Reload Ready**: Model handler designed for automatic weight reloading
 - **Binary Classification**: Simplified positive/negative sentiment for clear results
+
+## 🎥 Video Demo
+
+Watch the technical demonstration:
+
+[![Youtube Video](https://img.shields.io/badge/▶️-Watch%20Demo-red?style=for-the-badge&logo=youtube)](https://youtu.be/vh1p-dsVnco?feature=shared)
+
+_3-minute demo covering real-time sentiment analysis, tech stack, fine-tuning process._
